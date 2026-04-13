@@ -63,7 +63,7 @@ const RadarChartComponent = ({ data }: { data: any[] }) => (
 export default function App() {
   const [state, setState] = useState<AppState>('landing');
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, 'L' | 'M' | 'H'>>({});
+  const [answers, setAnswers] = useState<Record<number, number>>({});
   const [result, setResult] = useState<Personality | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -71,12 +71,12 @@ export default function App() {
 
   // --- Logic ---
 
-  const handleAnswer = (score: 'L' | 'M' | 'H') => {
+  const handleAnswer = (optionIndex: number) => {
     const currentQuestion = QUESTIONS[currentQuestionIndex];
     if (!currentQuestion) return;
 
-    setAnswers(prev => ({ ...prev, [currentQuestion.id]: score }));
-    
+    setAnswers(prev => ({ ...prev, [currentQuestion.id]: optionIndex }));
+
     if (currentQuestionIndex < QUESTIONS.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
     } else {
@@ -87,61 +87,95 @@ export default function App() {
   const generateResult = () => {
     setIsGenerating(true);
     setState('result');
-    
+
     // Simulate generation delay for "ritual" feel
     setTimeout(() => {
-      // 归一化分数到0-100范围
-      const dimensionScores: Record<number, number> = {};
-      const dimensionWeights: Record<number, number> = {};
-      
-      // 计算每个维度的加权分数
-      Object.entries(answers).forEach(([qId, score]) => {
+      // 五维特质分数累加
+      const traitScores = {
+        '甲抗性': 0,
+        '创造力': 0,
+        '拖延指数': 0,
+        '工具精通': 0,
+        '细节控': 0
+      };
+      const traitCounts = {
+        '甲抗性': 0,
+        '创造力': 0,
+        '拖延指数': 0,
+        '工具精通': 0,
+        '细节控': 0
+      };
+
+      // 累加每道题选择的权重
+      Object.entries(answers).forEach(([qId, optionIndex]) => {
         const question = QUESTIONS.find(q => q.id === parseInt(qId));
-        if (question) {
-          const weight = question.weight || 1;
-          const numericScore = score === 'L' ? 0 : score === 'M' ? 50 : 100;
-          const weightedScore = numericScore * weight;
-          dimensionScores[question.dimension] = (dimensionScores[question.dimension] || 0) + weightedScore;
-          dimensionWeights[question.dimension] = (dimensionWeights[question.dimension] || 0) + weight;
+        const idx = optionIndex as number;
+        if (question && question.options[idx]) {
+          const weights = question.options[idx].weights;
+          traitScores['甲抗性'] += weights['甲抗性'];
+          traitScores['创造力'] += weights['创造力'];
+          traitScores['拖延指数'] += weights['拖延指数'];
+          traitScores['工具精通'] += weights['工具精通'];
+          traitScores['细节控'] += weights['细节控'];
+          traitCounts['甲抗性']++;
+          traitCounts['创造力']++;
+          traitCounts['拖延指数']++;
+          traitCounts['工具精通']++;
+          traitCounts['细节控']++;
         }
       });
 
-      // 归一化得到0-100的维度分数
-      const normalizedScores: number[] = [];
-      for (let i = 0; i < 15; i++) {
-        if (dimensionWeights[i] && dimensionWeights[i] > 0) {
-          normalizedScores.push(Math.round(dimensionScores[i] / dimensionWeights[i]));
-        } else {
-          normalizedScores.push(50); // 默认中间值
-        }
-      }
+      // 计算平均分数（0-100）
+      const avgTraits = {
+        '甲抗性': Math.round(traitScores['甲抗性'] / Math.max(traitCounts['甲抗性'], 1)),
+        '创造力': Math.round(traitScores['创造力'] / Math.max(traitCounts['创造力'], 1)),
+        '拖延指数': Math.round(traitScores['拖延指数'] / Math.max(traitCounts['拖延指数'], 1)),
+        '工具精通': Math.round(traitScores['工具精通'] / Math.max(traitCounts['工具精通'], 1)),
+        '细节控': Math.round(traitScores['细节控'] / Math.max(traitCounts['细节控'], 1))
+      };
 
-      // 计算加权距离匹配最相似的人格
-      let bestMatch = PERSONALITIES[0];
-      let maxSimilarity = -Infinity;
+      // 基于问卷匹配最相似的人格（使用欧氏距离）
+      let quizMatch = PERSONALITIES[0];
+      let minDistance = Infinity;
 
       PERSONALITIES.forEach(p => {
         let totalDistance = 0;
-        let totalWeight = 0;
-        
-        for (let i = 0; i < 15; i++) {
-          const templateScore = p.template[i] === 'L' ? 0 : p.template[i] === 'M' ? 50 : 100;
-          const diff = Math.abs(normalizedScores[i] - templateScore);
-          // 使用方差作为距离度量
+        p.stats.forEach(stat => {
+          const diff = avgTraits[stat.label as keyof typeof avgTraits] - stat.value;
           totalDistance += diff * diff;
-          totalWeight += 1;
-        }
-        
-        const avgDistance = totalDistance / totalWeight;
-        const similarity = 10000 - avgDistance; // 相似度 = 10000 - 平均距离平方
-        
-        if (similarity > maxSimilarity) {
-          maxSimilarity = similarity;
-          bestMatch = p;
+        });
+        const distance = Math.sqrt(totalDistance);
+
+        if (distance < minDistance) {
+          minDistance = distance;
+          quizMatch = p;
         }
       });
 
-      setResult(bestMatch);
+      // 根据稀有度权重随机选择结果
+      // Common: 55%, Rare: 30%, Epic: 15%
+      const rarityRoll = Math.random();
+      let finalResult: Personality;
+
+      if (rarityRoll < 0.55) {
+        // 选中 Common 人格（从问卷匹配和所有Common中加权选择）
+        const commonPersonas = PERSONALITIES.filter(p => p.rarity === 'Common');
+        // 问卷匹配结果权重更高
+        const weightedCommon = quizMatch.rarity === 'Common'
+          ? [quizMatch, ...commonPersonas.filter(p => p.id !== quizMatch.id)]
+          : commonPersonas;
+        finalResult = weightedCommon[Math.floor(Math.random() * weightedCommon.length)];
+      } else if (rarityRoll < 0.85) {
+        // 选中 Rare 人格
+        const rarePersonas = PERSONALITIES.filter(p => p.rarity === 'Rare');
+        finalResult = rarePersonas[Math.floor(Math.random() * rarePersonas.length)];
+      } else {
+        // 选中 Epic 人格
+        const epicPersonas = PERSONALITIES.filter(p => p.rarity === 'Epic');
+        finalResult = epicPersonas[Math.floor(Math.random() * epicPersonas.length)];
+      }
+
+      setResult(finalResult);
       setIsGenerating(false);
     }, 2500);
   };
@@ -243,7 +277,7 @@ export default function App() {
                     key={idx}
                     whileHover={{ scale: 1.01, backgroundColor: '#000', color: '#fff' }}
                     whileTap={{ scale: 0.99 }}
-                    onClick={() => handleAnswer(option.score)}
+                    onClick={() => handleAnswer(idx)}
                     className="w-full p-6 text-left border-2 border-black rounded-2xl text-xl font-bold transition-colors flex items-center justify-between group"
                   >
                     <span>{option.text}</span>
@@ -311,7 +345,7 @@ export default function App() {
             <img 
               src={getLocalImagePath(result.title) || ''} 
               alt={result.title}
-              className="w-full h-full object-cover grayscale contrast-125"
+              className="w-full h-full object-cover"
             />
             <div className="absolute top-4 left-4">
               <div className="bg-black text-white px-3 py-1 text-sm font-black uppercase skew-x-[-12deg]">
